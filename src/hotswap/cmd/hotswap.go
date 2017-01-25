@@ -18,11 +18,11 @@ import (
 )
 
 var pname string
-
 var lock sync.Mutex
 var proc *os.Process
+var group *grouper
 
-var previous time.Time
+var   psignal time.Time
 const threshold = time.Second * 3
 
 var conf struct {
@@ -70,6 +70,10 @@ func main() {
   
   conf.Debug = *fDebug
   conf.Verbose = *fVerbose
+  
+  group = newGrouper(time.Millisecond * 100, 100, func(v interface{}) error {
+    return term(v.(*os.Process))
+  })
   
   if len(watchDirs) > 0 {
     fmt.Printf("%v: Watching roots:\n", pname)
@@ -176,14 +180,15 @@ func run(c string, a []string) {
 /**
  * Kill the currently running process, allowing it to restart
  */
-func term(p *os.Process) {
-  fmt.Printf("%v: Reloading process", pname)
+func term(p *os.Process) error {
+  fmt.Printf("%v: Reloading process...\n", pname)
   if p != nil {
     err := p.Signal(os.Interrupt)
     if err != nil {
-      fmt.Printf("%v: Could not signal process %v: %v", pname, p.Pid, err)
+      return fmt.Errorf("Could not signal process %v: %v", p.Pid, err)
     }
   }
+  return nil
 }
 
 /**
@@ -208,12 +213,15 @@ func monitor(d, f []string) {
   
   for {
     select {
-      case e, ok := <- watcher.Events:
-        if !ok { break }
-        fmt.Println("EVENT", e)
       case err, ok := <- watcher.Errors:
         if !ok { break }
         panic(err)
+      case _, ok := <- watcher.Events:
+        if !ok { break }
+        err := group.Event(process())
+        if err != nil {
+          panic(err)
+        }
     }
   }
   
@@ -254,8 +262,9 @@ func monitorPath(w *fsnotify.Watcher, d string, f []string) error {
     
     if len(f) > 0 {
       match := false
+      fname := finfo.Name()
       for _, x := range f {
-        m, err := path.Match(d, x)
+        m, err := path.Match(x, fname)
         if err != nil {
           return err
         }
@@ -287,12 +296,12 @@ func signals() {
   signal.Notify(sig, os.Kill)
   go func() {
     for e := range sig {
-      if e == os.Kill || time.Since(previous) < threshold {
+      if e == os.Kill || time.Since(psignal) < threshold {
         os.Exit(0)
-      }else{
-        term(process())
+      }else if err := term(process()); err != nil {
+        panic(err)
       }
-      previous = time.Now()
+      psignal = time.Now()
     }
   }()
 }
