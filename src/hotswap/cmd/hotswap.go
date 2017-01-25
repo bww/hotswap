@@ -293,10 +293,9 @@ func monitorPath(w *fsnotify.Watcher, d string, f []string) error {
 func signals() {
   sig := make(chan os.Signal, 1)
   signal.Notify(sig, os.Interrupt)
-  signal.Notify(sig, os.Kill)
   go func() {
-    for e := range sig {
-      if e == os.Kill || time.Since(psignal) < threshold {
+    for range sig {
+      if time.Since(psignal) < threshold {
         os.Exit(0)
       }else if err := term(process()); err != nil {
         panic(err)
