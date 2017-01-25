@@ -39,7 +39,6 @@ func main() {
   
   for {
     run(c, a)
-    <- time.After(time.Second)
   }
 }
 
@@ -134,7 +133,7 @@ func term(p *os.Process) {
  */
 func monitor(r string) {
   for range time.Tick(time.Second) {
-    fmt.Println("...")
+    // ...
   }
 }
 
@@ -147,16 +146,12 @@ func signals() {
   signal.Notify(sig, os.Kill)
   go func() {
     for e := range sig {
-      if time.Since(previous) < threshold {
-        fmt.Printf("\n%v: Second signal, exiting...\n", os.Args[0])
-        os.Exit(0) // just exit, it's the second in a series
-      }
-      previous = time.Now()
-      if e == os.Kill {
+      if e == os.Kill || time.Since(previous) < threshold {
         os.Exit(0)
       }else{
         term(process())
       }
+      previous = time.Now()
     }
   }()
 }
