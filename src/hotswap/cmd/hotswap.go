@@ -22,6 +22,7 @@ var lock sync.Mutex
 var proc *os.Process
 var group *grouper
 var generation int
+var termsig os.Signal
 
 var   psignal time.Time
 const threshold = time.Second * 3
@@ -63,6 +64,7 @@ func main() {
   }
   
   cmdline       := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+  fSignal       := cmdline.String   ("signal",        "KILL",   "The signal which should be sent to the managed process when reloading. Use 'KILL' or 'INT'.")
   fReload       := cmdline.Bool     ("reload",        false,    "Reload on interrupt instead of exiting.")
   fDebug        := cmdline.Bool     ("debug",         false,    "Enable debugging mode.")
   fVerbose      := cmdline.Bool     ("verbose",       false,    "Enable verbose debugging mode.")
@@ -73,9 +75,14 @@ func main() {
   conf.Debug = *fDebug
   conf.Verbose = *fVerbose
   
-  group = newGrouper(time.Millisecond * 100, 100, func(v interface{}) error {
-    return term(v.(*os.Process))
-  })
+  switch {
+    case strings.EqualFold(*fSignal, "INT"):
+      termsig = os.Interrupt
+    case strings.EqualFold(*fSignal, "KILL"):
+      termsig = os.Kill
+    default:
+      panic(fmt.Errorf("Unknown signal: %v", *fSignal))
+  }
   
   if len(watchDirs) > 0 {
     fmt.Printf("%v: Watching roots:\n", pname)
@@ -140,6 +147,9 @@ func process() *os.Process {
 func setProcess(p *os.Process) {
   lock.Lock()
   proc = p
+  group = newGrouper(time.Second, func() error {
+    return term(p)
+  })
   lock.Unlock()
 }
 
@@ -183,12 +193,25 @@ func run(c string, a []string) {
 }
 
 /**
+ * Mark a reload event
+ */
+func event() {
+  fmt.Println("EVENT")
+  lock.Lock()
+  fmt.Println("EVENT 1")
+  defer lock.Unlock()
+  if group != nil {
+    group.Event()
+  }
+}
+
+/**
  * Kill the currently running process, allowing it to restart
  */
 func term(p *os.Process) error {
   fmt.Printf("%v: Reloading process...\n", pname)
   if p != nil {
-    err := p.Signal(os.Interrupt)
+    err := p.Signal(termsig)
     if err != nil {
       return fmt.Errorf("Could not signal process %v: %v", p.Pid, err)
     }
@@ -223,10 +246,7 @@ func monitor(d, f []string) {
         panic(err)
       case _, ok := <- watcher.Events:
         if !ok { break }
-        err := group.Event(process())
-        if err != nil {
-          panic(err)
-        }
+        event()
     }
   }
   
