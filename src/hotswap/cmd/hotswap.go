@@ -1,10 +1,10 @@
 package main
 
 import (
+  "io"
   "os"
   "os/exec"
   "os/signal"
-  "io"
   "fmt"
   "time"
   "flag"
@@ -21,6 +21,7 @@ var pname string
 var lock sync.Mutex
 var proc *os.Process
 var group *grouper
+var generation int
 
 var   psignal time.Time
 const threshold = time.Second * 3
@@ -62,6 +63,7 @@ func main() {
   }
   
   cmdline       := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+  fReload       := cmdline.Bool     ("reload",        false,    "Reload on interrupt instead of exiting.")
   fDebug        := cmdline.Bool     ("debug",         false,    "Enable debugging mode.")
   fVerbose      := cmdline.Bool     ("verbose",       false,    "Enable verbose debugging mode.")
   cmdline.Var    (&watchDirs,        "watch",                   "Watch a directory tree for changes. Provide this flag repeatedly to watch multiple directories.")
@@ -97,7 +99,9 @@ func main() {
   }
   
   go monitor(watchDirs, watchFilters)
-  go signals()
+  if *fReload {
+    go signals()
+  }
   
   for {
     run(c, a)
@@ -146,7 +150,8 @@ func run(c string, a []string) {
   fmt.Printf("%v: %v %v\n", pname, c, strings.Join(a, " "))
   
   cmd := exec.Command(c, a...)
-  cmd.Env = append(os.Environ(), fmt.Sprintf("GO_HOTSWAP_MANAGER_PID=%d", os.Getpid()))
+  cmd.Env = append(os.Environ(), fmt.Sprintf("GO_HOTSWAP_MANAGER_PID=%d", os.Getpid()), fmt.Sprintf("GO_HOTSWAP_GENERATION=%d", generation))
+  generation++
   
   pout, err := cmd.StdoutPipe()
   if err != nil {
