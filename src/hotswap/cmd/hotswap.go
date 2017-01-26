@@ -10,26 +10,26 @@ import (
   "flag"
   "sync"
   "path"
+  "bytes"
   "strings"
+  "runtime"
 )
 
 import (
   "github.com/fsnotify/fsnotify"
 )
 
-var pname string
 var lock sync.Mutex
 var proc *os.Process
 var group *grouper
 var generation int
-var termsig os.Signal
-
-var   psignal time.Time
-const threshold = time.Second * 3
 
 var conf struct {
+  Cmd     string
   Debug   bool
   Verbose bool
+  Delay   time.Duration
+  Signal  os.Signal
 }
 
 /**
@@ -58,34 +58,37 @@ func (s *flagList) String() string {
 func main() {
   var watchDirs, watchFilters flagList
   
-  pname = os.Args[0]
+  pname := os.Args[0]
   if x := strings.LastIndex(pname, "/"); x > 0 {
     pname = pname[x+1:]
   }
   
   cmdline       := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-  fSignal       := cmdline.String   ("signal",        "KILL",   "The signal which should be sent to the managed process when reloading. Use 'KILL' or 'INT'.")
-  fReload       := cmdline.Bool     ("reload",        false,    "Reload on interrupt instead of exiting.")
-  fDebug        := cmdline.Bool     ("debug",         false,    "Enable debugging mode.")
-  fVerbose      := cmdline.Bool     ("verbose",       false,    "Enable verbose debugging mode.")
-  cmdline.Var    (&watchDirs,        "watch",                   "Watch a directory tree for changes. Provide this flag repeatedly to watch multiple directories.")
-  cmdline.Var    (&watchFilters,     "filter",                  "Watch only files with specific name patterns for changes. Specify a glob pattern, e.g. '*.go'.")
+  fDelay        := cmdline.Duration ("delay",         time.Second,    "The delay interval in which to group events.")
+  fSignal       := cmdline.String   ("signal",        "KILL",         "The signal which should be sent to the managed process when reloading. Use 'KILL' or 'INT'.")
+  fVerbose      := cmdline.Bool     ("verbose",       false,          "Enable verbose debugging mode.")
+  fDebug        := cmdline.Bool     ("debug",         false,          "Enable debugging mode.")
+  fDumpStack    := cmdline.Bool     ("debug:stack",   false,          "Dump the stack on interrupt before exiting.")
+  cmdline.Var    (&watchDirs,        "watch",                         "Watch a directory tree for changes. Provide this flag repeatedly to watch multiple directories.")
+  cmdline.Var    (&watchFilters,     "filter",                        "Watch only files with specific name patterns for changes. Specify a glob pattern, e.g. '*.go'.")
   cmdline.Parse(os.Args[1:])
   
+  conf.Cmd = pname
   conf.Debug = *fDebug
   conf.Verbose = *fVerbose
+  conf.Delay = *fDelay
   
   switch {
     case strings.EqualFold(*fSignal, "INT"):
-      termsig = os.Interrupt
+      conf.Signal = os.Interrupt
     case strings.EqualFold(*fSignal, "KILL"):
-      termsig = os.Kill
+      conf.Signal = os.Kill
     default:
       panic(fmt.Errorf("Unknown signal: %v", *fSignal))
   }
   
   if len(watchDirs) > 0 {
-    fmt.Printf("%v: Watching roots:\n", pname)
+    fmt.Printf("%v: Watching roots:\n", conf.Cmd)
     for _, e := range watchDirs {
       fmt.Printf("  -> %s\n", e)
     }
@@ -93,7 +96,7 @@ func main() {
   
   args := cmdline.Args()
   if len(args) < 2 {
-    fmt.Printf("%v: Usage hotswap <command> [args]\n", pname)
+    fmt.Printf("%v: Usage hotswap <command> [args]\n", conf.Cmd)
     return
   }
   
@@ -106,7 +109,7 @@ func main() {
   }
   
   go monitor(watchDirs, watchFilters)
-  if *fReload {
+  if *fDumpStack {
     go signals()
   }
   
@@ -146,18 +149,21 @@ func process() *os.Process {
  */
 func setProcess(p *os.Process) {
   lock.Lock()
+  defer lock.Unlock()
   proc = p
-  group = newGrouper(time.Second, func() error {
+  if group != nil {
+    group.Invoke()
+  }
+  group = newGrouper(time.Millisecond * 2500, func() error {
     return term(p)
   })
-  lock.Unlock()
 }
 
 /**
  * Run a process.
  */
 func run(c string, a []string) {
-  fmt.Printf("%v: %v %v\n", pname, c, strings.Join(a, " "))
+  fmt.Printf("%v: %v %v\n", conf.Cmd, c, strings.Join(a, " "))
   
   cmd := exec.Command(c, a...)
   cmd.Env = append(os.Environ(), fmt.Sprintf("GO_HOTSWAP_MANAGER_PID=%d", os.Getpid()), fmt.Sprintf("GO_HOTSWAP_GENERATION=%d", generation))
@@ -178,8 +184,10 @@ func run(c string, a []string) {
     panic(err)
   }
   
+  fmt.Println("SETTING PROCESS MAYBE?")
   setProcess(cmd.Process)
   defer setProcess(nil)
+  fmt.Println("DID THAT SHIT!")
   
   fmt.Println()
   go io.Copy(os.Stdout, pout)
@@ -187,7 +195,7 @@ func run(c string, a []string) {
   
   err = cmd.Wait()
   if err != nil {
-    fmt.Printf("%v: Process exited with error: %v\n", pname, err)
+    fmt.Printf("%v: Process exited with error: %v\n", conf.Cmd, err)
   }
   
 }
@@ -196,9 +204,7 @@ func run(c string, a []string) {
  * Mark a reload event
  */
 func event() {
-  fmt.Println("EVENT")
   lock.Lock()
-  fmt.Println("EVENT 1")
   defer lock.Unlock()
   if group != nil {
     group.Event()
@@ -206,12 +212,12 @@ func event() {
 }
 
 /**
- * Kill the currently running process, allowing it to restart
+ * Kill the currently running process, allowing it to restart.
  */
 func term(p *os.Process) error {
-  fmt.Printf("%v: Reloading process...\n", pname)
+  fmt.Printf("%v: Reloading process [%v]...\n", conf.Cmd, conf.Signal)
   if p != nil {
-    err := p.Signal(termsig)
+    err := p.Signal(conf.Signal)
     if err != nil {
       return fmt.Errorf("Could not signal process %v: %v", p.Pid, err)
     }
@@ -244,7 +250,8 @@ func monitor(d, f []string) {
       case err, ok := <- watcher.Errors:
         if !ok { break }
         panic(err)
-      case _, ok := <- watcher.Events:
+      case e, ok := <- watcher.Events:
+        fmt.Println("--->", e)
         if !ok { break }
         event()
     }
@@ -320,12 +327,11 @@ func signals() {
   signal.Notify(sig, os.Interrupt)
   go func() {
     for range sig {
-      if time.Since(psignal) < threshold {
-        os.Exit(0)
-      }else if err := term(process()); err != nil {
-        panic(err)
-      }
-      psignal = time.Now()
+      fmt.Printf("\n%v: Received a signal, dumping stack...\n", conf.Cmd)
+      data := make([]byte, 5 << 20)
+      n := runtime.Stack(data, true)
+      io.Copy(os.Stderr, bytes.NewReader(data[:n]))
+      os.Exit(0)
     }
   }()
 }

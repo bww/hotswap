@@ -37,6 +37,21 @@ func (g *grouper) Event() {
 }
 
 /**
+ * Invoke the action immediately and clear it. If the action has already
+ * been fired, this method does nothing.
+ */
+func (g *grouper) Invoke() error {
+  g.Lock()
+  defer g.Unlock()
+  if g.action == nil {
+    return nil
+  }
+  r := g.action()
+  g.action = nil
+  return r
+}
+
+/**
  * Wait asynchronously and fire the action after the specified duration
  */
 func (g *grouper) After(d time.Duration) {
@@ -55,19 +70,15 @@ func (g *grouper) after(d time.Duration) error {
   var tick <-chan time.Time
   var cancel <-chan struct{}
   
-  fmt.Println("HERE UH OK")
   g.Lock()
   
-  fmt.Println("CHECK-1", g.cancel)
   if g.cancel != nil {
     close(g.cancel)
   }
   g.cancel = make(chan struct{})
   cancel = g.cancel
   
-  fmt.Println("CHECK-O", g.timer)
   if g.timer != nil {
-    fmt.Println("STOP/CANCEL/SWAP TIMER")
     g.timer.Stop()
   }
   g.timer = time.NewTimer(d)
@@ -75,16 +86,14 @@ func (g *grouper) after(d time.Duration) error {
   
   g.Unlock()
   
-  fmt.Println("WAIT", g.delay)
-  
   select {
     case <- cancel:
       fmt.Println("CANCEL")
     case <- tick:
       fmt.Println("DO IT")
-      return g.action()
+      return g.Invoke()
+      
   }
   
-  fmt.Println("MMKAY")
   return nil
 }
