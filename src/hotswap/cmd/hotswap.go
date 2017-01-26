@@ -26,11 +26,12 @@ var group *grouper
 var generation int
 
 var conf struct {
-  Cmd     string
-  Debug   bool
-  Verbose bool
-  Delay   time.Duration
-  Signal  os.Signal
+  Cmd         string
+  Debug       bool
+  Verbose     bool
+  DumpOnExit  bool
+  Delay       time.Duration
+  Signal      os.Signal
 }
 
 /**
@@ -77,6 +78,7 @@ func main() {
   conf.Cmd = pname
   conf.Debug = *fDebug
   conf.Verbose = *fVerbose
+  conf.DumpOnExit = *fDumpStack
   conf.Delay = *fDelay
   
   switch {
@@ -110,9 +112,7 @@ func main() {
   }
   
   go monitor(watchDirs, watchFilters)
-  if *fDumpStack {
-    go signals()
-  }
+  go signals()
   
   for {
     run(c, a)
@@ -252,8 +252,11 @@ func monitor(d, f []string) {
       case err, ok := <- watcher.Errors:
         if !ok { break }
         panic(err)
-      case _, ok := <- watcher.Events:
+      case e, ok := <- watcher.Events:
         if !ok { break }
+        if conf.Verbose {
+          fmt.Printf("--> %v %v\n", time.Now(), e)
+        }
         event()
     }
   }
@@ -328,10 +331,13 @@ func signals() {
   signal.Notify(sig, os.Interrupt)
   go func() {
     for range sig {
-      fmt.Printf("\n%v: Received a signal, dumping stack...\n", conf.Cmd)
-      data := make([]byte, 5 << 20)
-      n := runtime.Stack(data, true)
-      io.Copy(os.Stderr, bytes.NewReader(data[:n]))
+      if conf.DumpOnExit {
+        fmt.Printf("\n%v: Received a signal, dumping stack...\n", conf.Cmd)
+        data := make([]byte, 5 << 20)
+        n := runtime.Stack(data, true)
+        io.Copy(os.Stderr, bytes.NewReader(data[:n]))
+      }
+      term(process())
       os.Exit(0)
     }
   }()
