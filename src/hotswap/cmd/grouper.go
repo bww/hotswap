@@ -1,7 +1,6 @@
 package main
 
 import (
-  "fmt"
   "time"
   "sync"
 )
@@ -88,9 +87,7 @@ func (g *grouper) after(d time.Duration) error {
   
   select {
     case <- cancel:
-      fmt.Println("CANCEL")
     case <- tick:
-      fmt.Println("DO IT")
       return g.Invoke()
       
   }

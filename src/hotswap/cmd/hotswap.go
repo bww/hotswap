@@ -13,6 +13,7 @@ import (
   "bytes"
   "strings"
   "runtime"
+  "syscall"
 )
 
 import (
@@ -167,6 +168,7 @@ func run(c string, a []string) {
   
   cmd := exec.Command(c, a...)
   cmd.Env = append(os.Environ(), fmt.Sprintf("GO_HOTSWAP_MANAGER_PID=%d", os.Getpid()), fmt.Sprintf("GO_HOTSWAP_GENERATION=%d", generation))
+  cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
   generation++
   
   pout, err := cmd.StdoutPipe()
@@ -184,10 +186,8 @@ func run(c string, a []string) {
     panic(err)
   }
   
-  fmt.Println("SETTING PROCESS MAYBE?")
   setProcess(cmd.Process)
   defer setProcess(nil)
-  fmt.Println("DID THAT SHIT!")
   
   fmt.Println()
   go io.Copy(os.Stdout, pout)
@@ -217,9 +217,11 @@ func event() {
 func term(p *os.Process) error {
   fmt.Printf("%v: Reloading process [%v]...\n", conf.Cmd, conf.Signal)
   if p != nil {
-    err := p.Signal(conf.Signal)
+    pgid, err := syscall.Getpgid(p.Pid)
     if err != nil {
-      return fmt.Errorf("Could not signal process %v: %v", p.Pid, err)
+      panic(err)
+    }else{
+      syscall.Kill(-pgid, 15) // note the minus sign
     }
   }
   return nil
@@ -250,8 +252,7 @@ func monitor(d, f []string) {
       case err, ok := <- watcher.Errors:
         if !ok { break }
         panic(err)
-      case e, ok := <- watcher.Events:
-        fmt.Println("--->", e)
+      case _, ok := <- watcher.Events:
         if !ok { break }
         event()
     }
