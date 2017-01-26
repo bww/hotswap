@@ -248,15 +248,21 @@ func monitor(d, f []string) {
   }
   
   for {
+    var e fsnotify.Event
+    var err error
+    var ok bool
+    
     select {
-      case err, ok := <- watcher.Errors:
+      case e, ok = <- watcher.Events:
+        if !ok { break }
+      case err, ok = <- watcher.Errors:
         if !ok { break }
         panic(err)
-      case e, ok := <- watcher.Events:
-        if !ok { break }
-        if conf.Verbose {
-          fmt.Printf("--> %v %v\n", time.Now(), e)
-        }
+    }
+    
+    switch e.Op {
+      case fsnotify.Write, fsnotify.Remove, fsnotify.Rename:
+        if conf.Verbose { fmt.Printf("--> %v %v\n", time.Now(), e) }
         event()
     }
   }
@@ -328,6 +334,7 @@ func monitorPath(w *fsnotify.Watcher, d string, f []string) error {
  */
 func signals() {
   sig := make(chan os.Signal, 1)
+  signal.Notify(sig, os.Kill)
   signal.Notify(sig, os.Interrupt)
   go func() {
     for range sig {
