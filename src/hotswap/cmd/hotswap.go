@@ -79,7 +79,13 @@ func main() {
   conf.Debug = *fDebug
   conf.Verbose = *fVerbose
   conf.DumpOnExit = *fDumpStack
-  conf.Delay = *fDelay
+  
+  if *fDelay < time.Millisecond * 10 {
+    conf.Delay = time.Millisecond * 10
+  }else{
+    conf.Delay = *fDelay
+  }
+  fmt.Printf("%v: Event grouping delay: %v\n", conf.Cmd, conf.Delay)
   
   switch {
     case strings.EqualFold(*fSignal, "INT"):
